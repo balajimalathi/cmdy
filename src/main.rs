@@ -1,7 +1,8 @@
-use std::{fs, process::Command, env};
+use std::{fs, io::Write, process::Command, sync::mpsc, thread, time::Duration, env};
 use serde::{Serialize, Deserialize};
-use dialoguer::{Input, Confirm, Select};
+use dialoguer::{Input, Select};
 use std::env::args;
+use chrono::Local; 
 
 // Structure to hold named command sets and working directory
 #[derive(Serialize, Deserialize)]
@@ -17,6 +18,7 @@ struct CommandSet {
 }
 
 const CONFIG_FILE: &str = "config.json";
+const LOG_FILE: &str = "cmdy.log";
 
 // Load configuration from the config file
 fn load_config() -> Config {
@@ -31,18 +33,69 @@ fn save_config(config: &Config) {
 }
 
 // Execute the list of commands sequentially
-fn execute_commands(commands: &[String], directory: &String) {
+fn execute_commands(commands: &[String], directory: &String, set: &CommandSet) {
+    println!("Executing command set: {}", set.name);
+
     for cmd in commands {
         println!("Executing: {}", cmd);
+
         let mut command = Command::new("sh");
         command.arg("-c").arg(cmd).current_dir(directory);
-        
-        let status = command.status().expect("Failed to execute command");
-        if !status.success() {
-            eprintln!("Command failed: {}", cmd);
-            return;
+
+        if cmd == "npm run dev" {
+            let mut child = command.spawn().expect("Failed to start process");
+
+            // Start a spinner in a separate thread
+            let (tx, rx) = mpsc::channel();
+            let spinner_thread = thread::spawn(move || {
+                let spinner = ["|", "/", "-", "\\"];
+                let mut i = 0;
+                while rx.try_recv().is_err() {
+                    print!("\rSyncing Obsidian vault... {}", spinner[i % 4]);
+                    std::io::stdout().flush().unwrap();
+                    i += 1;
+                    thread::sleep(Duration::from_millis(200));
+                }
+                println!("\rSync complete!            "); // Clear the spinner
+            });
+
+            // Wait for a few seconds to allow vault sync
+            thread::sleep(Duration::from_secs(10));
+
+            // Kill the process
+            child.kill().expect("Failed to stop npm run dev");
+
+            // Stop spinner
+            tx.send(()).unwrap();
+            spinner_thread.join().unwrap();
+
+            println!("npm run dev stopped after pulling the vault.");
+        } else {
+            let status = command.status().expect("Failed to execute command");
+            if !status.success() {
+                eprintln!("Command failed: {}", cmd);
+                return;
+            }
         }
     }
+
+    log_execution(set);
+}
+
+fn log_execution(command_set: &CommandSet) {
+    let log_entry = format!(
+        "{} - Executed: {}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+        command_set.name
+    );
+
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_FILE)
+        .expect("Failed to open log file")
+        .write_all(log_entry.as_bytes())
+        .expect("Failed to write log");
 }
 
 fn list_commands() {
@@ -171,7 +224,7 @@ fn run() {
     }
 
     if let Some(set) = config.command_sets.iter().find(|set| set.name == command_set_name) {
-        execute_commands(&set.commands, &directory);
+        execute_commands(&set.commands, &directory, set);
     }
 }
 
