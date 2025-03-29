@@ -1,0 +1,27 @@
+{
+  "directories": [
+    "F:\\skndan\\cli\\starlight-obsidian-cli",
+    "F:\\StudioProjects"
+  ],
+  "command_sets": [
+    {
+      "name": "new",
+      "commands": [
+        "dir"
+      ]
+    },
+    {
+      "name": "starlight",
+      "commands": [
+        "npm run build",
+        "dir"
+      ]
+    },
+    {
+      "name": "test",
+      "commands": [
+        "dir"
+      ]
+    }
+  ]
+}
