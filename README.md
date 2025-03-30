@@ -90,7 +90,3 @@ MIT License
 
 ## Contributions
 Feel free to submit issues and pull requests to improve `cmdy`!
-
-## Author
-Developed by [Your Name]
-
