@@ -1,10 +1,9 @@
-use std::{fs, io::Write, process::Command, sync::mpsc, thread, time::Duration, env};
-use serde::{Serialize, Deserialize};
+use chrono::Local;
 use dialoguer::{Input, Select};
-use std::env::args;
-use chrono::Local; 
+use indicatif::{ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
+use std::{env, fs, io::Write, process::Command, sync::mpsc, thread, time::Duration};
 
-// Structure to hold named command sets and working directory
 #[derive(Serialize, Deserialize)]
 struct Config {
     directories: Vec<String>,
@@ -20,75 +19,73 @@ struct CommandSet {
 const CONFIG_FILE: &str = "config.json";
 const LOG_FILE: &str = "cmdy.log";
 
-// Load configuration from the config file
+/// Load the configuration from the JSON file
 fn load_config() -> Config {
-    let config_data = fs::read_to_string(CONFIG_FILE).unwrap_or_else(|_| "{\"directories\": [], \"command_sets\": []}".to_string());
+    let config_data = fs::read_to_string(CONFIG_FILE)
+        .unwrap_or_else(|_| "{\"directories\": [], \"command_sets\": []}".to_string());
     serde_json::from_str(&config_data).expect("Failed to parse config file")
 }
 
-// Save configuration to the config file
+/// Save the current configuration to the JSON file
 fn save_config(config: &Config) {
     let config_data = serde_json::to_string_pretty(config).expect("Failed to serialize config");
     fs::write(CONFIG_FILE, config_data).expect("Failed to save config file");
 }
 
-// Execute the list of commands sequentially
+/// Execute the selected command set in the specified directory
+
 fn execute_commands(commands: &[String], directory: &String, set: &CommandSet) {
-    println!("Executing command set: {}", set.name);
+    println!("\n🚀 Executing command set: {}", set.name);
+    let pb = ProgressBar::new(commands.len() as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{msg} [{bar:40.cyan/blue}] {pos}/{len} ({elapsed_precise})")
+        .unwrap()
+        .progress_chars("#>-"));
 
-    for cmd in commands {
-        println!("Executing: {}", cmd);
-
+    for (_, cmd) in commands.iter().enumerate() {
+        println!("🔹 Running: {}", cmd);
         let mut command = Command::new("sh");
         command.arg("-c").arg(cmd).current_dir(directory);
 
         if cmd == "npm run dev" {
             let mut child = command.spawn().expect("Failed to start process");
-
-            // Start a spinner in a separate thread
             let (tx, rx) = mpsc::channel();
             let spinner_thread = thread::spawn(move || {
                 let spinner = ["|", "/", "-", "\\"];
                 let mut i = 0;
                 while rx.try_recv().is_err() {
-                    print!("\rSyncing Obsidian vault... {}", spinner[i % 4]);
+                    print!("\rSpinning Deployment Server... {}", spinner[i % 4]);
                     std::io::stdout().flush().unwrap();
                     i += 1;
                     thread::sleep(Duration::from_millis(200));
                 }
-                println!("\rSync complete!            "); // Clear the spinner
+                println!("\rComplete!            ");
             });
-
-            // Wait for a few seconds to allow vault sync
             thread::sleep(Duration::from_secs(10));
-
-            // Kill the process
             child.kill().expect("Failed to stop npm run dev");
-
-            // Stop spinner
             tx.send(()).unwrap();
             spinner_thread.join().unwrap();
-
             println!("npm run dev stopped after pulling the vault.");
         } else {
             let status = command.status().expect("Failed to execute command");
             if !status.success() {
-                eprintln!("Command failed: {}", cmd);
+                eprintln!("❌ Command failed: {}", cmd);
                 return;
             }
         }
+        pb.inc(1);
     }
-
+    pb.finish_with_message("✅ All commands executed successfully!");
     log_execution(set);
 }
 
+/// Log executed command sets
 fn log_execution(command_set: &CommandSet) {
     let log_entry = format!(
         "{} - Executed: {}\n",
         Local::now().format("%Y-%m-%d %H:%M:%S"),
         command_set.name
     );
-
     fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -98,72 +95,38 @@ fn log_execution(command_set: &CommandSet) {
         .expect("Failed to write log");
 }
 
+/// List available command sets
 fn list_commands() {
     let config = load_config();
-    println!("Stored Command Sets:");
+    println!("\n📌 Stored Command Sets:");
     for (i, set) in config.command_sets.iter().enumerate() {
         println!("{}. {} - Commands: {:?}", i + 1, set.name, set.commands);
     }
 }
 
+/// View execution logs
+fn view_logs() {
+    let logs = fs::read_to_string(LOG_FILE).unwrap_or_else(|_| "No logs found.".to_string());
+    println!(
+        "\n📜 Execution Logs:\n{}
+",
+        logs
+    );
+}
+
+/// Delete a specific command set
 fn delete_command(command_name: &str) {
     let mut config = load_config();
     config.command_sets.retain(|set| set.name != command_name);
     save_config(&config);
-    println!("Deleted command set: {}", command_name);
+    println!("🗑️ Deleted command set: {}", command_name);
 }
 
-fn export_config() {
-    let config = load_config();
-    let file_path: String = Input::new()
-        .with_prompt("Enter the export file name (e.g., backup.json)")
-        .default("backup.json".to_string())
-        .interact_text()
-        .unwrap();
-
-    let data = serde_json::to_string_pretty(&config).expect("Failed to serialize");
-    fs::write(&file_path, data).expect("Failed to write file");
-    println!("Configuration exported to {}", file_path);
-}
-
-fn main() {
-    let args: Vec<String> = args().collect();
-    if args.len() > 1 {
-        match args[1].as_str() {
-            "run" => {
-                run();
-                return;
-            }
-            "list" => {
-                list_commands();
-                return;
-            }
-            "delete" if args.len() > 2 => {
-                delete_command(&args[2]);
-                return;
-            }
-            "export" => {
-                export_config();
-                return;
-            }
-            "--help" | "help" => {
-                help();
-                return;
-            }
-            _ => {
-                println!("Unknown command. Use 'cmdy --help' for available commands.");
-                return;
-            }
-        }
-    }
-    println!("Usage: cmdy <command>. Use 'cmdy --help' for more details.");
-}
-
-
+/// Run the CLI workflow
 fn run() {
     let mut config = load_config();
     let selection = Select::new()
-        .with_prompt("Do you want to run in the current directory or select a saved one?")
+        .with_prompt("Select a directory")
         .item("Current Directory")
         .items(&config.directories)
         .item("Enter New Directory")
@@ -174,7 +137,7 @@ fn run() {
         env::current_dir().unwrap().to_string_lossy().to_string()
     } else if selection == config.directories.len() + 1 {
         let new_dir: String = Input::new()
-            .with_prompt("Enter the directory path")
+            .with_prompt("Enter directory path")
             .interact_text()
             .unwrap();
         config.directories.push(new_dir.clone());
@@ -184,38 +147,40 @@ fn run() {
         config.directories[selection - 1].clone()
     };
 
-    let command_set_names: Vec<String> = config.command_sets.iter().map(|set| set.name.clone()).collect();
-    let command_set_name = if command_set_names.is_empty() {
+    let command_set_names: Vec<String> = config
+        .command_sets
+        .iter()
+        .map(|set| set.name.clone())
+        .collect();
+    let command_set_name = Select::new()
+        .with_prompt("Select a command set")
+        .items(&command_set_names)
+        .item("Create new command set")
+        .interact()
+        .unwrap();
+
+    let command_set_name = if command_set_name == command_set_names.len() {
         Input::new()
-            .with_prompt("Enter a new command set name")
+            .with_prompt("Enter new command set name")
             .interact_text()
             .unwrap()
     } else {
-        let selection = Select::new()
-            .with_prompt("Select an existing command set or create a new one")
-            .items(&command_set_names)
-            .item("Create new command set")
-            .interact()
-            .unwrap();
-        
-        if selection == command_set_names.len() {
-            Input::new()
-                .with_prompt("Enter a new command set name")
-                .interact_text()
-                .unwrap()
-        } else {
-            command_set_names[selection].clone()
-        }
+        command_set_names[command_set_name].clone()
     };
 
-    if !config.command_sets.iter().any(|set| set.name == command_set_name) {
-        println!("Creating a new command set.");
+    if !config
+        .command_sets
+        .iter()
+        .any(|set| set.name == command_set_name)
+    {
         let commands_input: String = Input::new()
-            .with_prompt("Enter the commands to execute (comma-separated)")
+            .with_prompt("Enter commands (comma-separated)")
             .interact_text()
             .unwrap();
-        let commands = commands_input.split(',').map(|s| s.trim().to_string()).collect();
-        
+        let commands = commands_input
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
         config.command_sets.push(CommandSet {
             name: command_set_name.clone(),
             commands,
@@ -223,16 +188,35 @@ fn run() {
         save_config(&config);
     }
 
-    if let Some(set) = config.command_sets.iter().find(|set| set.name == command_set_name) {
+    if let Some(set) = config
+        .command_sets
+        .iter()
+        .find(|set| set.name == command_set_name)
+    {
         execute_commands(&set.commands, &directory, set);
     }
 }
 
+/// Display help menu
 fn help() {
-    println!("cmdy CLI - Command Manager");
-    println!("Usage:");
-    println!("  cmdy run    - Run a saved command set");
-    println!("  cmdy list   - List all saved command sets");
-    println!("  cmdy delete <command_name> - Delete a saved command set");
-    println!("  cmdy --help | help - Show this help message");
+    println!("\n📌 cmdy CLI - Enhanced Command Manager");
+    println!("------------------------------------");
+    println!("cmdy run         - Run a command set");
+    println!("cmdy list        - List all command sets");
+    println!("cmdy logs        - View execution logs");
+    println!("cmdy delete <name> - Delete a command set");
+    println!("cmdy help        - Show this help message\n");
+}
+
+/// Entry point of the CLI application
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("run") => run(),
+        Some("list") => list_commands(),
+        Some("logs") => view_logs(),
+        Some("delete") if args.len() > 2 => delete_command(&args[2]),
+        Some("help") | Some("--help") => help(),
+        _ => println!("Usage: cmdy <command>. Use 'cmdy help' for details."),
+    }
 }
